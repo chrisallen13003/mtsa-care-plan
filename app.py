@@ -2,6 +2,7 @@ import json
 import zipfile
 from io import BytesIO
 from pathlib import Path
+
 import streamlit as st
 
 from utils_docx import fill_docx_content_controls_bytes
@@ -13,35 +14,33 @@ DEFAULT_TEMPLATE_PATH = Path("assets/MTSA_2024_CarePlan_custom.docx")
 
 GPT_LINK = "https://chatgpt.com/g/g-698e0cea59908191959eada445d19b4c-mtsa-care-plan-filler"
 
-PROMPT_TEMPLATE = """ You are generating anesthesia care plan batch JSON for an MTSA template filler.
-
+PROMPT_TEMPLATE = """You are generating anesthesia care plan batch JSON for an MTSA template filler.
 Return ONLY valid JSON (no markdown, no extra text).
 
 Output format:
 {
-"cases": [
-{
-"case_id": "001",
-"patient_label": "Case 001",
-"case": { ... }
-}
-]
+  "cases": [
+    {
+      "case_id": "001",
+      "patient_label": "Case 001",
+      "case": { ... }
+    }
+  ]
 }
 
-CRITICAL RULES:
+CRITICAL:
+- If you have >3 cases, output ONLY the first 3 as a complete JSON object. I will request the next batch.
+- Keep values concise (2–12 words), no long paragraphs.
+- Include BOTH legacy snake_case fields AND all required uppercase Word Tag fields.
 
-• Keep all values short (2–12 words). No long paragraphs.
-• If more than 3 cases are provided, generate ONLY the first 3 cases and stop.
-• I will request additional batches separately.
-• Never output partial JSON.
-• Use simulated educational data only.
-• Include BOTH legacy snake_case fields AND all required Word Tag uppercase fields.
-• PATIENT_NAME = student name.
-• REFERENCES must cite only Nagelhout Nurse Anesthesia and/or Miller’s Anesthesia.
+REFERENCES must cite only:
+- Nagelhout. Nurse Anesthesia
+- Miller. Miller’s Anesthesia
 
 Here are my cases:
-(Paste cases here)
+(Paste Pt 1... Pt N... here)
 """
+
 
 def load_default_template() -> bytes | None:
     if DEFAULT_TEMPLATE_PATH.exists():
@@ -60,8 +59,7 @@ def _s(v) -> str:
 
 def _prefer(case: dict, tag_key: str, legacy_value) -> str:
     """
-    Prefer the already-computed Word-tag (uppercase) value if present/non-empty,
-    otherwise fall back to the legacy-derived value.
+    Prefer already-computed uppercase Word-tag values if present, else fall back to legacy-derived values.
     """
     v = case.get(tag_key)
     if v is not None and str(v).strip() != "":
@@ -73,19 +71,18 @@ def build_tag_values(case: dict) -> dict:
     """
     Build dict of Word content control tag -> value.
     Prefer uppercase Word-tag keys from JSON; fall back to legacy keys/structures.
+    Also pass through any additional uppercase tags present in the JSON.
     """
     tag_values = {}
 
-    # Legacy nested dicts
     vs = case.get("preop_vs") or {}
     labs = case.get("labs") or {}
     aw = case.get("airway") or {}
     pmh = case.get("pmh") or {}
     ros = case.get("ros") or {}
 
-    # Core (PATIENT_NAME is a Word Tag but your GPT now uses it for STUDENT NAME)
+    # Core / identifiers (PATIENT_NAME is student name per your pipeline)
     tag_values["PATIENT_NAME"] = _prefer(case, "PATIENT_NAME", case.get("patient_name"))
-
     tag_values["AGE"] = _prefer(case, "AGE", case.get("age"))
     tag_values["GENDER"] = _prefer(case, "GENDER", case.get("gender"))
     tag_values["HEIGHT_CM"] = _prefer(case, "HEIGHT_CM", case.get("height_cm"))
@@ -99,7 +96,6 @@ def build_tag_values(case: dict) -> dict:
     tag_values["ROUTINE_MEDICATIONS"] = _prefer(case, "ROUTINE_MEDICATIONS", case.get("routine_meds"))
 
     # NPO
-    # Prefer explicit Word tag; else construct something sensible from legacy
     legacy_npo = None
     if case.get("npo_hours") is not None:
         legacy_npo = f"NPO {case.get('npo_hours')} hours"
@@ -122,11 +118,13 @@ def build_tag_values(case: dict) -> dict:
     tag_values["DENTITION_STATUS"] = _prefer(case, "DENTITION_STATUS", aw.get("dentition"))
     tag_values["AIRWAY_DESCRIPTION"] = _prefer(case, "AIRWAY_DESCRIPTION", aw.get("airway_description"))
 
-    # Med blocks
+    # Meds
     tag_values["PREOP_MEDS_DOSES"] = _prefer(case, "PREOP_MEDS_DOSES", case.get("preop_meds_doses"))
     tag_values["INDUCTION_MEDS_DOSES"] = _prefer(case, "INDUCTION_MEDS_DOSES", case.get("induction_meds_doses"))
     tag_values["MAINTENANCE_MEDS_DOSES"] = _prefer(case, "MAINTENANCE_MEDS_DOSES", case.get("maintenance_meds_doses"))
-    tag_values["MEDICATION_CONSIDERATIONS_INTERACTIONS"] = _prefer(case, "MEDICATION_CONSIDERATIONS_INTERACTIONS", case.get("med_considerations"))
+    tag_values["MEDICATION_CONSIDERATIONS_INTERACTIONS"] = _prefer(
+        case, "MEDICATION_CONSIDERATIONS_INTERACTIONS", case.get("med_considerations")
+    )
 
     # Labs/studies
     tag_values["CBC_RESULTS"] = _prefer(case, "CBC_RESULTS", labs.get("cbc"))
@@ -140,7 +138,7 @@ def build_tag_values(case: dict) -> dict:
     tag_values["BLOOD_TYPE"] = _prefer(case, "BLOOD_TYPE", labs.get("blood_type"))
     tag_values["OTHER_STUDIES"] = _prefer(case, "OTHER_STUDIES", labs.get("other_studies"))
 
-    # PMH / ROS (note template typo support PHM_CV)
+    # PMH/ROS (support template typo PHM_CV)
     tag_values["PHM_CV"] = _prefer(case, "PHM_CV", pmh.get("cv"))
     tag_values["PMH_RESP"] = _prefer(case, "PMH_RESP", pmh.get("resp"))
     tag_values["PMH_GI_GU"] = _prefer(case, "PMH_GI_GU", pmh.get("gi_gu"))
@@ -157,17 +155,64 @@ def build_tag_values(case: dict) -> dict:
     tag_values["ROS_EXTREMITIES"] = _prefer(case, "ROS_EXTREMITIES", ros.get("extremities"))
     tag_values["ROS_OTHER"] = _prefer(case, "ROS_OTHER", ros.get("other"))
 
-    # IMPORTANT: pass through ANY additional uppercase tags that exist in the JSON
-    # so you don't have to hardcode every tag mapping here.
+    # Pass-through any additional uppercase tags present in JSON (covers your full Tag list)
     for k, v in case.items():
-        if not isinstance(k, str):
-            continue
-        if k.isupper() and k not in tag_values:
+        if isinstance(k, str) and k.isupper() and k not in tag_values:
             if v is not None and str(v).strip() != "":
                 tag_values[k] = str(v)
 
-    # Ensure strings
-    return {str(k): _s(v) for k, v in tag_values.items()}
+    # Ensure strings and normalize keys
+    return {str(k).strip(): _s(v) for k, v in tag_values.items()}
+
+
+def _extract_json_objects(raw: str) -> list[dict]:
+    """
+    Accept either:
+      - one JSON object: {"cases":[...]}
+      - multiple JSON objects pasted back-to-back:
+          {"cases":[...]}
+          {"cases":[...]}
+          {"cases":[...]}
+    Returns list of parsed dicts.
+    """
+    s = raw.strip()
+    if not s:
+        return []
+
+    # Fast path: single JSON object
+    try:
+        obj = json.loads(s)
+        return [obj]
+    except Exception:
+        pass
+
+    # Multi-object parse using JSONDecoder raw_decode
+    dec = json.JSONDecoder()
+    objs: list[dict] = []
+    idx = 0
+    n = len(s)
+    while idx < n:
+        # skip whitespace
+        while idx < n and s[idx].isspace():
+            idx += 1
+        if idx >= n:
+            break
+        obj, end = dec.raw_decode(s, idx)
+        objs.append(obj)
+        idx = end
+    return objs
+
+
+def _merge_batches(objs: list[dict]) -> dict:
+    """
+    Merge multiple {"cases":[...]} objects into one.
+    """
+    all_cases: list[dict] = []
+    for o in objs:
+        if not isinstance(o, dict) or "cases" not in o or not isinstance(o["cases"], list):
+            raise ValueError("Each JSON object must be a dict with a 'cases' list.")
+        all_cases.extend(o["cases"])
+    return {"cases": all_cases}
 
 
 def render_batch_to_zip(template_bytes: bytes, batch: dict) -> bytes:
@@ -185,22 +230,28 @@ def render_batch_to_zip(template_bytes: bytes, batch: dict) -> bytes:
     return mem.getvalue()
 
 
+# -----------------------
+# Instructions section
+# -----------------------
 with st.expander("📌 Instructions (Start Here)", expanded=True):
     st.markdown("### How to use this app")
     st.markdown(
-        "1. **Generate `case_batch.json`** using either:\n"
+        "1. Generate batch JSON using either:\n"
         f"   - **MTSA Care Plan Filler GPT:** {GPT_LINK}\n"
-        "   - **Any LLM:** copy the prompt below and paste your patient cases\n"
-        "2. **Paste the JSON** into the box in this app.\n"
+        "   - **Any LLM:** copy the prompt below\n"
+        "2. Paste the JSON into the box in this app.\n"
+        "   - You may paste **multiple JSON batches back-to-back**.\n"
         "3. Click **Generate DOCX ZIP**.\n"
-        "4. Download the ZIP — it contains one filled DOCX per patient.\n\n"
+        "4. Download the ZIP — one filled DOCX per case.\n\n"
         "**Tip:** Do not include real patient identifiers (school use only)."
     )
-
     st.markdown("### Copy/paste prompt for any LLM")
     st.code(PROMPT_TEMPLATE, language="text")
 
 
+# -----------------------
+# Template selection
+# -----------------------
 st.subheader("Template")
 default_template_bytes = load_default_template()
 
@@ -221,8 +272,15 @@ else:
         st.warning("No template selected yet.")
 
 
-st.subheader("Paste case_batch.json")
-raw = st.text_area("Paste JSON here", height=260, placeholder='{ "cases": [ ... ] }')
+# -----------------------
+# JSON input + output
+# -----------------------
+st.subheader("Paste case_batch.json (one or multiple batches)")
+raw = st.text_area(
+    "Paste JSON here",
+    height=260,
+    placeholder='{ "cases": [ ... ] }\n{ "cases": [ ... ] }\n{ "cases": [ ... ] }',
+)
 
 col1, col2 = st.columns([1, 1])
 with col1:
@@ -236,14 +294,16 @@ if generate:
         st.stop()
 
     try:
-        batch = json.loads(raw)
-        assert isinstance(batch, dict) and "cases" in batch and isinstance(batch["cases"], list)
+        objs = _extract_json_objects(raw)
+        if not objs:
+            raise ValueError("No JSON found.")
+        merged = _merge_batches(objs)
     except Exception as e:
         st.error(f"Invalid JSON: {e}")
         st.stop()
 
-    zip_bytes = render_batch_to_zip(template_bytes, batch)
-    st.success("Generated ZIP.")
+    zip_bytes = render_batch_to_zip(template_bytes, merged)
+    st.success(f"Generated ZIP with {len(merged['cases'])} case(s).")
     st.download_button(
         "Download filled DOCX files (ZIP)",
         data=zip_bytes,
