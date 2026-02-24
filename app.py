@@ -44,10 +44,19 @@ Here are my cases:
 """
 
 
+# -----------------------
+# Utility Functions
+# -----------------------
+
 def load_default_template() -> bytes | None:
     if DEFAULT_TEMPLATE_PATH.exists():
         return DEFAULT_TEMPLATE_PATH.read_bytes()
     return None
+
+
+def safe_name(s: str) -> str:
+    keep = "-_(). "
+    return "".join(c for c in s if c.isalnum() or c in keep).strip()
 
 
 def _s(v) -> str:
@@ -70,7 +79,7 @@ def build_tag_values(case: dict) -> dict:
     pmh = case.get("pmh") or {}
     ros = case.get("ros") or {}
 
-    # FORCE STUDENT NAME TO GENERIC
+    # Force generic student label
     tag_values["PATIENT_NAME"] = "Student"
 
     tag_values["AGE"] = _prefer(case, "AGE", case.get("age"))
@@ -91,7 +100,7 @@ def build_tag_values(case: dict) -> dict:
     tag_values["PREOP_TEMP"] = _prefer(case, "PREOP_TEMP", vs.get("temp"))
     tag_values["PREOP_SPO2"] = _prefer(case, "PREOP_SPO2", vs.get("spo2"))
 
-    # Pass through any additional uppercase tags
+    # Pass through additional uppercase tags
     for k, v in case.items():
         if isinstance(k, str) and k.isupper() and k not in tag_values:
             if v is not None and str(v).strip() != "":
@@ -131,7 +140,7 @@ def _extract_json_objects(raw: str) -> list[dict]:
 def _merge_batches(objs: list[dict]) -> dict:
     all_cases = []
     for o in objs:
-        if not isinstance(o, dict) or "cases" not in o or not isinstance(o["cases"], list):
+        if not isinstance(o, dict) or "cases" not in o:
             raise ValueError("Each JSON object must contain a 'cases' list.")
         all_cases.extend(o["cases"])
     return {"cases": all_cases}
@@ -147,7 +156,7 @@ def render_batch_to_zip(template_bytes: bytes, batch: dict) -> bytes:
             case = item.get("case", {}) or {}
             tag_values = build_tag_values(case)
 
-            # FORCE SIMPLE FILENAMES (NO REAL NAMES EVER)
+            # Force simple filenames
             filename = f"{case_id} - Pt {case_id}.docx"
 
             out_docx = fill_docx_content_controls_bytes(template_bytes, tag_values)
@@ -178,16 +187,17 @@ with st.expander("📌 Instructions (Start Here)", expanded=True):
 
     st.warning(
         "Please review all generated information carefully and edit where necessary. "
-        "This tool is for educational use only. If something looks incorrect, "
-        "revise your case input and regenerate."
+        "If something looks incorrect, adjust your case input and regenerate."
     )
 
     st.markdown("### How to use this app")
     st.markdown(
-        "1. Generate batch JSON using the GPT link below.\n"
-        f"2. Paste the JSON into this app.\n"
+        "1. Generate batch JSON using:\n"
+        f"   - **MTSA Care Plan Filler GPT:** {GPT_LINK}\n"
+        "   - Or copy the prompt below into another LLM.\n"
+        "2. Paste JSON into this app.\n"
         "3. Click **Generate DOCX ZIP**.\n"
-        "4. Download the ZIP — one DOCX per case.\n"
+        "4. Download the ZIP.\n"
     )
 
     st.markdown("### Copy/paste prompt for any LLM")
@@ -200,23 +210,41 @@ with st.expander("📌 Instructions (Start Here)", expanded=True):
 st.subheader("Template")
 default_template_bytes = load_default_template()
 
-template_bytes = None
+use_default = False
 if default_template_bytes:
+    use_default = st.toggle("Use built-in MTSA template (recommended)", value=True)
+
+template_bytes = None
+
+if use_default and default_template_bytes:
     template_bytes = default_template_bytes
     st.success("Using built-in template.")
 else:
-    st.warning("Template not found in /assets.")
+    up = st.file_uploader("Upload a template DOCX (optional)", type=["docx"])
+    if up:
+        template_bytes = up.read()
+        st.success("Using uploaded template.")
+    else:
+        st.warning("No template selected yet.")
 
 
 # -----------------------
 # JSON Input + Output
 # -----------------------
-st.subheader("Paste case_batch.json")
-raw = st.text_area("Paste JSON here", height=260)
+st.subheader("Paste case_batch.json (one or multiple batches)")
+raw = st.text_area(
+    "Paste JSON here",
+    height=260,
+    placeholder='{ "cases": [ ... ] }',
+)
 
 generate = st.button("Generate DOCX ZIP", type="primary", disabled=not raw.strip())
 
 if generate:
+    if not template_bytes:
+        st.error("Template not found. Add one or enable built-in template.")
+        st.stop()
+
     try:
         objs = _extract_json_objects(raw)
         merged = _merge_batches(objs)
