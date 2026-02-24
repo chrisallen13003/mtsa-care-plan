@@ -12,7 +12,7 @@ st.title("MTSA Care Plan Filler (DOCX Generator)")
 DEFAULT_TEMPLATE_PATH = Path("assets/MTSA_2024_CarePlan_custom.docx")
 
 # 🔧 CHANGE THIS ONCE: paste your GPT share link here
-GPT_LINK = https://chatgpt.com/g/g-698e0cea59908191959eada445d19b4c-mtsa-care-plan-filler
+GPT_LINK = GPT_LINK = "https://chatgpt.com/g/g-698e0cea59908191959eada445d19b4c-mtsa-care-plan-filler"
 
 PROMPT_TEMPLATE = """You are generating anesthesia care plan batch JSON for an MTSA template filler.
 Return ONLY valid JSON (no markdown, no extra text).
