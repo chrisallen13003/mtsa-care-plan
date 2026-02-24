@@ -13,37 +13,35 @@ DEFAULT_TEMPLATE_PATH = Path("assets/MTSA_2024_CarePlan_custom.docx")
 
 GPT_LINK = "https://chatgpt.com/g/g-698e0cea59908191959eada445d19b4c-mtsa-care-plan-filler"
 
-PROMPT_TEMPLATE = """You are generating anesthesia care plan batch JSON for an MTSA template filler.
+PROMPT_TEMPLATE = """ You are generating anesthesia care plan batch JSON for an MTSA template filler.
+
 Return ONLY valid JSON (no markdown, no extra text).
 
 Output format:
 {
-  "cases": [
-    {
-      "case_id": "001",
-      "patient_label": "...",
-      "case": { ... }
-    }
-  ]
+"cases": [
+{
+"case_id": "001",
+"patient_label": "Case 001",
+"case": { ... }
+}
+]
 }
 
-For EACH case, fully populate these keys (even if not provided; invent plausible patient-specific values):
-- age, gender, height_cm, weight_kg, asa
-- procedure_name, procedure, position, duration_hours, npo_since, npo_hours, ebl_ml
-- allergies, past_surgical_history, routine_meds
-- pmh dict with keys: cv, resp, endo, gi_gu, cns, hep, extremities, other
-- ros dict with keys: cv, resp, gi_gu, cns, hep, extremities, other (tailor to comorbidities)
-- preop_vs dict: bp, hr, rr, temp, spo2 (tailored; not identical across cases)
-- airway_device and airway dict: mallampati, thyromental_distance, tmj_problems, dentition, airway_description
-- preop_meds_doses, induction_meds_doses, maintenance_meds_doses, med_considerations (tailor to scenario)
-- labs dict: cbc, chem, coags, ekg, echo, cxr, hcg, type_and_cross, blood_type, other_studies
+CRITICAL RULES:
 
-Use plausible simulated values for school use. Do not include real identifiers.
+• Keep all values short (2–12 words). No long paragraphs.
+• If more than 3 cases are provided, generate ONLY the first 3 cases and stop.
+• I will request additional batches separately.
+• Never output partial JSON.
+• Use simulated educational data only.
+• Include BOTH legacy snake_case fields AND all required Word Tag uppercase fields.
+• PATIENT_NAME = student name.
+• REFERENCES must cite only Nagelhout Nurse Anesthesia and/or Miller’s Anesthesia.
 
 Here are my cases:
-(Paste Pt 1... Pt N... here)
+(Paste cases here)
 """
-
 
 def load_default_template() -> bytes | None:
     if DEFAULT_TEMPLATE_PATH.exists():
