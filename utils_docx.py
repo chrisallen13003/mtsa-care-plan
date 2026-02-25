@@ -15,6 +15,25 @@ def iter_word_xml_parts(zipf: zipfile.ZipFile):
             yield name
 
 
+def _strip_sdt_locks(sdt: ET.Element) -> None:
+    """
+    Remove Word content-control lock settings so filled content is editable.
+    This targets <w:sdtPr><w:lock w:val="..."/> (and any nested w:lock).
+    Safe to call even if no locks exist.
+    """
+    # Prefer removing direct children under sdtPr (most common)
+    sdtPr = sdt.find("./w:sdtPr", NSMAP)
+    if sdtPr is not None:
+        for lock_el in list(sdtPr.findall("./w:lock", NSMAP)):
+            sdtPr.remove(lock_el)
+
+    # Defensive: remove any remaining w:lock elements under this sdt
+    # (rare, but harmless to clean)
+    for parent in sdt.findall(".//w:lock/..", NSMAP):
+        for lock_el in list(parent.findall("./w:lock", NSMAP)):
+            parent.remove(lock_el)
+
+
 def set_sdt_text(sdt: ET.Element, text: str):
     """
     Preserve existing structure. Replace text in w:t nodes inside the content control.
@@ -65,8 +84,7 @@ def build_tag_values(case_dict: Dict[str, Any]) -> Dict[str, str]:
     """
     tag_values: Dict[str, str] = {}
 
-    # 1) Pass-through: include EVERYTHING at the top level (both legacy + tag keys),
-    # but only as strings (Word content controls take text).
+    # 1) Pass-through: include top-level scalars as strings
     for k, v in case_dict.items():
         if isinstance(v, (dict, list)):
             continue
@@ -98,10 +116,9 @@ def build_tag_values(case_dict: Dict[str, Any]) -> Dict[str, str]:
     put_if_missing("PAST_SURGICAL_HISTORY", case_dict.get("past_surgical_history"))
 
     # NPO
-    # If you have only npo_hours, convert to a readable string for NPO_STATUS
     if isinstance(case_dict.get("npo_hours"), (int, float)) and not tag_values.get("NPO_STATUS"):
         put_if_missing("NPO_STATUS", f"NPO {case_dict.get('npo_hours')} hours")
-    put_if_missing("NPO_STATUS", case_dict.get("npo_status"))  # if present
+    put_if_missing("NPO_STATUS", case_dict.get("npo_status"))
 
     # Preop vitals
     put_if_missing("PREOP_BP", preop_vs.get("bp"))
@@ -130,8 +147,8 @@ def build_tag_values(case_dict: Dict[str, Any]) -> Dict[str, str]:
     put_if_missing("BLOOD_TYPE", labs.get("blood_type"))
     put_if_missing("OTHER_STUDIES", labs.get("other_studies"))
 
-    # PMH / ROS (your Word tags use PMH_* and ROS_*; legacy uses pmh/ros dicts)
-    put_if_missing("PHM_CV", pmh.get("cv"))  # note template typo PHM_CV
+    # PMH / ROS
+    put_if_missing("PHM_CV", pmh.get("cv"))  # template typo PHM_CV
     put_if_missing("PMH_RESP", pmh.get("resp"))
     put_if_missing("PMH_CNS", pmh.get("cns"))
     put_if_missing("PMH_HEP", pmh.get("hep"))
@@ -147,13 +164,13 @@ def build_tag_values(case_dict: Dict[str, Any]) -> Dict[str, str]:
     put_if_missing("ROS_EXTREMITIES", ros.get("extremities"))
     put_if_missing("ROS_OTHER", ros.get("other"))
 
-    # Meds / considerations (legacy keys match tag names except one)
+    # Meds / considerations
     put_if_missing("PREOP_MEDS_DOSES", case_dict.get("preop_meds_doses"))
     put_if_missing("INDUCTION_MEDS_DOSES", case_dict.get("induction_meds_doses"))
     put_if_missing("MAINTENANCE_MEDS_DOSES", case_dict.get("maintenance_meds_doses"))
     put_if_missing("MEDICATION_CONSIDERATIONS_INTERACTIONS", case_dict.get("med_considerations"))
 
-    # Final normalization: strip tag keys, ensure string values
+    # Final normalization
     normalized: Dict[str, str] = {}
     for k, v in tag_values.items():
         kk = str(k).strip()
@@ -166,6 +183,7 @@ def build_tag_values(case_dict: Dict[str, Any]) -> Dict[str, str]:
 def fill_docx_content_controls_bytes(template_bytes: bytes, tag_values: Dict[str, str]) -> bytes:
     """
     Return DOCX bytes with content controls filled where tag matches keys in tag_values.
+    Also removes any w:lock in content controls so output is editable.
     Uses ElementTree only (no compiled dependencies).
     """
     zin_fp = BytesIO(template_bytes)
@@ -187,7 +205,10 @@ def fill_docx_content_controls_bytes(template_bytes: bytes, tag_values: Dict[str
                         zout.writestr(item, data)
                         continue
 
+                    # Fill content controls + strip locks
                     for sdt in xml.findall(".//w:sdt", NSMAP):
+                        _strip_sdt_locks(sdt)
+
                         tag_el = sdt.find(".//w:tag", NSMAP)
                         if tag_el is None:
                             continue
